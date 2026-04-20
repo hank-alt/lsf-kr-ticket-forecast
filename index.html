@@ -121,7 +121,22 @@
 <main>
   <!-- 0. Phase breakdown (Phase 1 + Phase 2 projection) -->
   <section class="panel full" id="phase-panel">
-    <h2>공연 전체 예측 — 1차 + 2차 판매</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:12px;">
+      <h2 style="margin:0;">공연 전체 예측 — 1차 + 2차 판매</h2>
+      <div style="display:flex; align-items:center; gap:10px; font-size:12px;">
+        <span style="color:var(--muted);">막판 수요 부스트</span>
+        <input type="range" id="boost-slider" min="0" max="30" value="0" style="width:160px;" />
+        <span id="boost-label" style="color:var(--accent2); font-weight:600; min-width:32px; font-variant-numeric:tabular-nums;">+0%</span>
+      </div>
+    </div>
+
+    <div style="padding:10px 14px; background:rgba(242,185,106,0.08); border-left:3px solid var(--warn); border-radius:4px; margin-bottom:14px; font-size:12px; color:var(--text);">
+      ⚠ <strong>이 예측은 "앞으로 외부 자극이 0일 때" 의 자연 수요 기준</strong>입니다.
+      공연 직전 마케팅 푸시, SNS 바이럴, 팬덤 재관람 같은 효과는 반영되지 않아요.
+      과거 VR 콘서트는 보통 공연 1-2주 전 하루 40-60장의 "막판 수요" 가 붙는 경향이 있어요 —
+      오른쪽 슬라이더로 그 시나리오를 직접 확인해보세요.
+    </div>
+
     <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:14px;">
       <div style="padding:14px; background:var(--panel2); border-radius:8px;">
         <div style="color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">
@@ -151,8 +166,8 @@
              id="pb-combined-p50">–</div>
         <div style="color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums;"
              id="pb-combined-band">–</div>
-        <div style="color:var(--muted); font-size:11px; margin-top:6px;">
-          1차 + 2차. 2차 오픈 후 스냅샷이 쌓이면 이 추정치가 실측으로 자동 교체됩니다.
+        <div id="pb-boosted-note" style="color:var(--accent2); font-size:11px; margin-top:6px; display:none; font-variant-numeric:tabular-nums;">
+          부스트 반영: <strong id="pb-boosted-value">–</strong>
         </div>
       </div>
     </div>
@@ -346,17 +361,44 @@ function render() {
 function renderPhaseBreakdown() {
   const pb = DATA.phase_breakdown;
   if (!pb) { document.getElementById('phase-panel').style.display='none'; return; }
+  applyBoost(0);  // 초기 렌더: 부스트 0%
+}
+
+function applyBoost(boostPct) {
+  const pb = DATA.phase_breakdown;
+  if (!pb) return;
+  const mult = 1 + boostPct / 100;
   const p1 = pb.phase1_forecast, p2 = pb.phase2_forecast, c = pb.combined_forecast;
-  document.getElementById('pb-phase1-p50').textContent   = fmt(p1.p50);
-  document.getElementById('pb-phase1-band').textContent  = `P5 ${fmt(p1.p5)} – P95 ${fmt(p1.p95)}`;
+
+  // Phase 1: 1차는 이미 많이 팔렸으니 부스트 효과 절반만 반영
+  //          (이미 판매된 건 증가 안 하고, 잔여 수요에만 적용)
+  const p1_boosted_p50 = p1.p50 * (1 + boostPct / 200);
+  const p2_boosted_p50 = p2.p50 * mult;
+  const c_boosted_p50  = p1_boosted_p50 + p2_boosted_p50;
+
+  document.getElementById('pb-phase1-p50').textContent   = fmt(p1_boosted_p50);
+  document.getElementById('pb-phase1-band').textContent  = `P5 ${fmt(p1.p5)} – P95 ${fmt(p1.p95 * mult)}`;
   document.getElementById('pb-phase1-meta').textContent  =
-    `${fmt(pb.phase1_seats)}석 / 전환율 ${(pb.phase1_conversion.p50*100).toFixed(1)}%`;
-  document.getElementById('pb-phase2-p50').textContent   = fmt(p2.p50);
-  document.getElementById('pb-phase2-band').textContent  = `P5 ${fmt(p2.p5)} – P95 ${fmt(p2.p95)}`;
+    `${fmt(pb.phase1_seats)}석 / 자연 전환율 ${(pb.phase1_conversion.p50*100).toFixed(1)}%`;
+  document.getElementById('pb-phase2-p50').textContent   = fmt(p2_boosted_p50);
+  document.getElementById('pb-phase2-band').textContent  = `P5 ${fmt(p2.p5)} – P95 ${fmt(p2.p95 * mult)}`;
   document.getElementById('pb-phase2-meta').textContent  =
     `${fmt(pb.phase2_seats)}석 추정 / 1차 전환율 이식`;
-  document.getElementById('pb-combined-p50').textContent  = fmt(c.p50);
-  document.getElementById('pb-combined-band').textContent = `P5 ${fmt(c.p5)} – P95 ${fmt(c.p95)}`;
+  document.getElementById('pb-combined-p50').textContent  = fmt(c_boosted_p50);
+  document.getElementById('pb-combined-band').textContent =
+    `P5 ${fmt(c.p5 + p1.p5*boostPct/200 + p2.p5*boostPct/100)} – P95 ${fmt(c.p95 * mult)}`;
+
+  const note = document.getElementById('pb-boosted-note');
+  const val  = document.getElementById('pb-boosted-value');
+  if (boostPct > 0) {
+    note.style.display = '';
+    val.textContent = `+${fmt(c_boosted_p50 - c.p50)}장 (vs 자연 수요 ${fmt(c.p50)})`;
+  } else {
+    note.style.display = 'none';
+  }
+
+  // 상단 KPI 도 동기화
+  document.getElementById('kpi-combined-p50').textContent = fmt(c_boosted_p50);
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +732,17 @@ function bindControls() {
     adjLabel.textContent = (v >= 0 ? '+' : '') + v + '%';
     updateAggChart();
   });
+
+  // Late-demand boost slider
+  const boost = document.getElementById('boost-slider');
+  const boostLabel = document.getElementById('boost-label');
+  if (boost) {
+    boost.addEventListener('input', () => {
+      const v = parseInt(boost.value, 10);
+      boostLabel.textContent = `+${v}%`;
+      applyBoost(v);
+    });
+  }
   for (const id of ['show-band-95','show-band-75','show-models']) {
     document.getElementById(id).addEventListener('change', updateAggChart);
   }
