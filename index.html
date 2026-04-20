@@ -607,7 +607,7 @@ function renderHeatmap(mode) {
         const occ = mode === 'current' ? s.occ : s.final_occ_est;
         cell.style.background = occColor(occ);
         cell.style.color = occ > 0.5 ? '#0f1115' : '#e8ebef';
-        cell.innerHTML = `${(occ*100).toFixed(0)}${s.special?'*':''}`;
+        cell.innerHTML = `${(occ*100).toFixed(0)}%${s.special?'*':''}`;
         cell.title = `${d} ${fmtTime(t)}\n`
           + `현재: ${s.sold}/${s.seats} (${pct(s.occ)})\n`
           + `예측: ${s.final_sold_est}/${s.seats} (${pct(s.final_occ_est)})\n`
