@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LSF VR Concert : Invitation — 티켓 예측 대시보드</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#1a1d24; --panel2:#232731; --text:#e8ebef;
+    --muted:#8a93a2; --accent:#7c9eff; --accent2:#59d4a9; --warn:#f2b96a;
+    --danger:#ef6b77; --grid:#2a2f3a;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family: -apple-system, BlinkMacSystemFont, "Pretendard",
+                      "Segoe UI", system-ui, sans-serif;
+         font-size:14px; line-height:1.5; }
+  header { padding:24px 32px; border-bottom:1px solid var(--grid);
+           display:flex; justify-content:space-between; align-items:flex-end;
+           flex-wrap:wrap; gap:16px; }
+  h1 { margin:0 0 4px; font-size:22px; font-weight:600; }
+  h2 { margin:0 0 12px; font-size:16px; font-weight:600;
+       color:var(--text); letter-spacing:-0.01em; }
+  .subtitle { color:var(--muted); font-size:13px; }
+  .kpis { display:flex; gap:24px; flex-wrap:wrap; }
+  .kpi { text-align:right; }
+  .kpi .label { color:var(--muted); font-size:11px;
+                text-transform:uppercase; letter-spacing:0.05em; }
+  .kpi .value { font-size:22px; font-weight:600; margin-top:2px;
+                font-variant-numeric: tabular-nums; }
+  .kpi .value.small { font-size:14px; font-weight:500; }
+  main { padding: 20px 32px 60px; display:grid;
+         grid-template-columns: 2fr 1fr; gap:20px; }
+  .panel { background:var(--panel); border:1px solid var(--grid);
+           border-radius:10px; padding:20px; }
+  .panel.full { grid-column: 1 / -1; }
+  .chart-wrap { position:relative; height:320px; }
+  .chart-wrap.tall { height:380px; }
+  table { width:100%; border-collapse: collapse; font-size:13px;
+          font-variant-numeric: tabular-nums; }
+  th, td { padding:7px 10px; text-align:left;
+           border-bottom:1px solid var(--grid); }
+  th { font-weight:500; color:var(--muted); font-size:12px;
+       text-transform:uppercase; letter-spacing:0.03em; }
+  td.num { text-align:right; }
+  tr:hover td { background:var(--panel2); }
+  .bar { height:6px; background:var(--panel2); border-radius:3px;
+         overflow:hidden; margin-top:2px; }
+  .bar > span { display:block; height:100%;
+                background: linear-gradient(90deg, #7c9eff, #59d4a9); }
+  .bar.special > span { background: linear-gradient(90deg, #f2b96a, #ef6b77); }
+  .pill { display:inline-block; padding:1px 8px; border-radius:10px;
+          font-size:11px; background:var(--panel2); color:var(--muted); }
+  .pill.special { background:#3d2a18; color:var(--warn); }
+  .pill.sold-out { background:#3d1f22; color:var(--danger); }
+  .controls { display:flex; gap:16px; flex-wrap:wrap;
+              align-items:center; padding-bottom:12px;
+              border-bottom:1px solid var(--grid); margin-bottom:16px; }
+  .controls label { font-size:12px; color:var(--muted); }
+  input[type="range"] { accent-color: var(--accent); }
+  .heatmap { display:grid; gap:2px; font-size:11px;
+             font-variant-numeric: tabular-nums; }
+  .heatmap .hcell { padding:8px 6px; text-align:center; border-radius:3px;
+                    cursor: default; transition: transform .1s; }
+  .heatmap .hcell:hover { transform: scale(1.08); z-index:2; position:relative; }
+  .heatmap .hhead { color:var(--muted); font-weight:500; padding:6px 2px;
+                    text-align:center; }
+  .legend { display:flex; gap:8px; font-size:11px; color:var(--muted);
+            margin-top:8px; align-items:center; }
+  .legend .swatch { width:16px; height:10px; border-radius:2px; display:inline-block; }
+  .upload { padding:10px; border:1px dashed var(--grid); border-radius:8px;
+            color:var(--muted); font-size:12px; text-align:center;
+            cursor:pointer; }
+  .upload:hover { border-color:var(--accent); color:var(--text); }
+  .filter-row { display:flex; gap:12px; margin-bottom:12px; }
+  .filter-row input, .filter-row select {
+    background:var(--panel2); color:var(--text);
+    border:1px solid var(--grid); border-radius:6px;
+    padding:6px 10px; font-size:13px; font-family:inherit;
+  }
+  .footer-note { grid-column:1 / -1; color:var(--muted);
+                 font-size:12px; padding:10px 0; text-align:center; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>LE SSERAFIM VR Concert : Invitation</h1>
+    <div class="subtitle" id="subtitle">데이터 로딩 중…</div>
+  </div>
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">상영기간</div>
+      <div class="value small" id="kpi-period">–</div>
+      <div class="value small" id="kpi-days" style="color:var(--muted)">–</div>
+    </div>
+    <div class="kpi">
+      <div class="label">현재 판매</div>
+      <div class="value" id="kpi-sold">–</div>
+    </div>
+    <div class="kpi">
+      <div class="label">예측 최종 (P50)</div>
+      <div class="value" id="kpi-p50">–</div>
+      <div class="value small" id="kpi-band" style="color:var(--muted)">–</div>
+    </div>
+    <div class="kpi">
+      <div class="label">최대 수용 (K)</div>
+      <div class="value" id="kpi-K">–</div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- 1. Aggregate forecast chart -->
+  <section class="panel full">
+    <div class="controls">
+      <div>
+        <label>표시 구간</label>&nbsp;
+        <label><input type="checkbox" id="show-band-95" checked /> P5–P95</label>
+        <label><input type="checkbox" id="show-band-75" checked /> P25–P75</label>
+        <label><input type="checkbox" id="show-models" /> 개별 모델</label>
+      </div>
+      <div style="margin-left:auto; display:flex; gap:12px; align-items:center;">
+        <label for="rate-adj">속도 보정</label>
+        <input type="range" id="rate-adj" min="-30" max="30" value="0" />
+        <span id="rate-adj-label" style="font-variant-numeric:tabular-nums;">+0%</span>
+      </div>
+    </div>
+    <h2>누적 판매 곡선 + 앙상블 예측 (Logistic + Gompertz + Bass)</h2>
+    <div class="chart-wrap tall"><canvas id="chart-agg"></canvas></div>
+  </section>
+
+  <!-- 2. Model comparison -->
+  <section class="panel">
+    <h2>모델 비교</h2>
+    <table id="model-table">
+      <thead><tr>
+        <th>Model</th><th class="num">K̂</th>
+        <th class="num">AICc</th><th class="num">Weight</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="legend" style="margin-top:14px;">
+      ΔAICc 기반 Akaike 가중치. 가중치 합 = 1.
+    </div>
+  </section>
+
+  <!-- 3. Velocity panel -->
+  <section class="panel">
+    <h2>스냅샷별 판매 속도</h2>
+    <div class="chart-wrap"><canvas id="chart-velocity"></canvas></div>
+  </section>
+
+  <!-- 4. Heatmap -->
+  <section class="panel full">
+    <h2>요일 × 시간대 점유율 히트맵</h2>
+    <div style="display:flex; gap:16px; align-items:center; margin-bottom:10px;">
+      <label><input type="radio" name="hmap" value="current" checked /> 현재 점유율</label>
+      <label><input type="radio" name="hmap" value="forecast" /> 예측 최종 점유율</label>
+      <div class="legend" style="margin-left:auto;">
+        <span>0%</span>
+        <span class="swatch" style="background:linear-gradient(90deg,#1a1d24,#7c9eff,#59d4a9,#f2b96a,#ef6b77); width:120px; height:10px;"></span>
+        <span>100%</span>
+        <span style="margin-left:12px;">
+          <span class="pill special">Special</span> = 사전할당/VIP 추정 (판매점프·만석)
+        </span>
+      </div>
+    </div>
+    <div id="heatmap"></div>
+  </section>
+
+  <!-- 5. Per-showing table -->
+  <section class="panel full">
+    <h2>회차별 예측</h2>
+    <div class="filter-row">
+      <input type="text" id="filter-date" placeholder="날짜 필터 (예: 2026-04-21)" />
+      <select id="sort-by">
+        <option value="date">정렬: 날짜순</option>
+        <option value="occ-desc">현재 점유율 ↓</option>
+        <option value="final-desc">예측 점유율 ↓</option>
+        <option value="gap">예측-현재 갭 ↓</option>
+      </select>
+      <label style="margin-left:auto; color:var(--muted);">
+        <input type="checkbox" id="hide-special" /> Special 회차 숨기기
+      </label>
+    </div>
+    <div style="max-height:420px; overflow:auto;">
+      <table id="showing-table">
+        <thead><tr>
+          <th>Date</th><th>DoW</th><th>Time</th>
+          <th class="num">판매</th>
+          <th>현재 점유율</th>
+          <th>예측 점유율 (P50)</th>
+          <th class="num">P5–P95</th>
+          <th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 6. Upload (client-side preview) -->
+  <section class="panel">
+    <h2>신규 CSV 미리보기 (선택)</h2>
+    <div class="upload" id="upload-box">
+      CSV 파일을 여기로 드래그하거나 클릭하세요.<br>
+      <span style="font-size:11px;">
+        (브라우저에서 누적판매만 덧붙여 미리보기. 정식 분석은 Python 실행 필요)
+      </span>
+    </div>
+    <input type="file" id="upload-input" accept=".csv" style="display:none" />
+    <div id="upload-result" style="margin-top:10px; color:var(--muted); font-size:12px;"></div>
+  </section>
+
+  <section class="panel">
+    <h2>메타</h2>
+    <table>
+      <tr><td>스냅샷 수</td><td class="num" id="meta-snaps">–</td></tr>
+      <tr><td>최초 스냅샷</td><td class="num" id="meta-first">–</td></tr>
+      <tr><td>최근 스냅샷</td><td class="num" id="meta-last">–</td></tr>
+      <tr><td>생성 시각</td><td class="num" id="meta-gen">–</td></tr>
+      <tr><td>Bottom-up 합계</td><td class="num" id="meta-bu">–</td></tr>
+    </table>
+  </section>
+
+  <div class="footer-note">
+    기여: ① snapshots/ 폴더에 CSV 추가 → ② <code>python3 analyze.py</code> →
+    ③ <code>git add snapshots/… data.json && git commit && git push</code>
+  </div>
+</main>
+
+<script>
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+const fmt    = n => new Intl.NumberFormat('ko-KR').format(Math.round(n));
+const pct    = x => (x * 100).toFixed(1) + '%';
+const DOWS   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+const DOW_KR = {Monday:'월',Tuesday:'화',Wednesday:'수',Thursday:'목',
+                Friday:'금',Saturday:'토',Sunday:'일'};
+const SLOTS  = [930, 1110, 1250, 1430, 1610, 1750, 1930, 2110];
+function fmtTime(t) {
+  const s = String(t).padStart(4,'0');
+  return s.slice(0,2) + ':' + s.slice(2);
+}
+function occColor(occ) {
+  // 0 -> panel2, linear through accents
+  const stops = [
+    [0.00, [26, 29, 36]],
+    [0.30, [124,158,255]],
+    [0.60, [89, 212,169]],
+    [0.85, [242,185,106]],
+    [1.00, [239,107,119]],
+  ];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [a,va] = stops[i], [b,vb] = stops[i+1];
+    if (occ <= b) {
+      const t = (occ - a) / (b - a);
+      const r = Math.round(va[0] + (vb[0]-va[0]) * t);
+      const g = Math.round(va[1] + (vb[1]-va[1]) * t);
+      const bl= Math.round(va[2] + (vb[2]-va[2]) * t);
+      return `rgb(${r},${g},${bl})`;
+    }
+  }
+  return 'rgb(239,107,119)';
+}
+
+// ---------------------------------------------------------------------------
+// Load data.json
+// ---------------------------------------------------------------------------
+let DATA = null;
+let chartAgg = null, chartVel = null;
+
+fetch('data.json')
+  .then(r => { if (!r.ok) throw new Error('data.json 로드 실패'); return r.json(); })
+  .then(d => { DATA = d; render(); })
+  .catch(err => {
+    document.getElementById('subtitle').textContent =
+      'data.json 을 찾을 수 없어요. python3 analyze.py 를 먼저 실행하세요.';
+  });
+
+function render() {
+  renderHeader();
+  renderAggChart();
+  renderModelTable();
+  renderVelocityChart();
+  renderHeatmap('current');
+  renderShowingTable();
+  renderMeta();
+  bindControls();
+}
+
+// ---------------------------------------------------------------------------
+// Header KPIs
+// ---------------------------------------------------------------------------
+function renderHeader() {
+  const m = DATA.meta;
+  const f = DATA.aggregate_forecast.final;
+  document.getElementById('subtitle').textContent =
+    `${m.venue} · ${m.num_snapshots}개 스냅샷 · 최근 업데이트 ${m.last_snapshot}`;
+  const sold = DATA.aggregate_forecast.observed_y.slice(-1)[0];
+  document.getElementById('kpi-sold').textContent = fmt(sold);
+  document.getElementById('kpi-p50').textContent = fmt(f.p50);
+  document.getElementById('kpi-band').textContent =
+    `P5 ${fmt(f.p5)} ~ P95 ${fmt(f.p95)}`;
+  document.getElementById('kpi-K').textContent = fmt(m.total_seats);
+  // Period & progress
+  if (m.event_start && m.event_end) {
+    document.getElementById('kpi-period').textContent =
+      `${m.event_start.slice(5)} ~ ${m.event_end.slice(5)}`;
+    document.getElementById('kpi-days').textContent =
+      `${m.days_elapsed}일차 / ${m.event_days}일 (${m.days_remaining}일 남음)`;
+  }
+  // Show warning if CSV doesn't yet cover full event
+  if (m.csv_listed_seats && m.csv_listed_seats < m.total_seats) {
+    const missing = m.total_seats - m.csv_listed_seats;
+    const el = document.getElementById('subtitle');
+    el.innerHTML += ` · <span style="color:var(--warn)">⚠ CSV에 `
+      + `${fmt(missing)}석 상당의 후반 회차가 아직 미오픈</span>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate forecast chart
+// ---------------------------------------------------------------------------
+function makeBandDatasets(f, opts) {
+  const grid = f.t_grid_hours;
+  const ds = [];
+  if (opts.band95) {
+    ds.push({
+      label: 'P5–P95',
+      data: grid.map((t,i) => ({x:t, y:f.p95[i]})),
+      borderWidth: 0, fill:'+1', pointRadius:0,
+      backgroundColor: 'rgba(124,158,255,0.08)', order: 5,
+    });
+    ds.push({
+      label: 'P5',
+      data: grid.map((t,i) => ({x:t, y:f.p5[i]})),
+      borderWidth: 0, pointRadius:0,
+      backgroundColor: 'transparent', order: 5,
+    });
+  }
+  if (opts.band75) {
+    ds.push({
+      label: 'P25–P75',
+      data: grid.map((t,i) => ({x:t, y:f.p75[i]})),
+      borderWidth: 0, fill:'+1', pointRadius:0,
+      backgroundColor: 'rgba(124,158,255,0.18)', order: 4,
+    });
+    ds.push({
+      label: 'P25',
+      data: grid.map((t,i) => ({x:t, y:f.p25[i]})),
+      borderWidth: 0, pointRadius:0,
+      backgroundColor: 'transparent', order: 4,
+    });
+  }
+  ds.push({
+    label: 'Ensemble (P50)',
+    data: grid.map((t,i) => ({x:t, y:f.central[i] * (1 + opts.rateAdj)})),
+    borderColor: '#7c9eff', borderWidth: 2.5, fill:false,
+    pointRadius: 0, order: 1, tension: 0.2,
+  });
+  // Observed
+  ds.push({
+    label: '실측',
+    data: f.observed_t.map((t,i) => ({x:t, y:f.observed_y[i]})),
+    borderColor: '#59d4a9', backgroundColor: '#59d4a9',
+    pointRadius: 5, pointStyle: 'circle', showLine: false, order: 0,
+  });
+  return ds;
+}
+
+function renderAggChart() {
+  const ctx = document.getElementById('chart-agg').getContext('2d');
+  const f = DATA.aggregate_forecast;
+  chartAgg = new Chart(ctx, {
+    type: 'line',
+    data: { datasets: makeBandDatasets(f,{band95:true,band75:true,rateAdj:0}) },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      animation:{ duration:400 },
+      interaction:{ mode:'index', intersect:false },
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display:true, text:'오픈 후 경과 시간 (h)', color:'#8a93a2' },
+          grid:  { color:'#2a2f3a' },
+          ticks: { color:'#8a93a2' }
+        },
+        y: {
+          title: { display:true, text:'누적 판매 (장)', color:'#8a93a2' },
+          grid:  { color:'#2a2f3a' },
+          ticks: { color:'#8a93a2', callback: v => fmt(v) }
+        }
+      },
+      plugins: {
+        legend: { position:'bottom', labels:{ color:'#e8ebef',
+                  filter: (item) => !['P5','P25'].includes(item.text) } },
+        tooltip: {
+          callbacks: {
+            title: items => `t = ${items[0].parsed.x.toFixed(1)}h`,
+            label: it => `${it.dataset.label}: ${fmt(it.parsed.y)}`
+          }
+        }
+      }
+    }
+  });
+}
+
+function updateAggChart() {
+  const adj = parseFloat(document.getElementById('rate-adj').value) / 100;
+  const b95 = document.getElementById('show-band-95').checked;
+  const b75 = document.getElementById('show-band-75').checked;
+  const showModels = document.getElementById('show-models').checked;
+  const f = DATA.aggregate_forecast;
+  const ds = makeBandDatasets(f,{band95:b95, band75:b75, rateAdj:adj});
+
+  if (showModels) {
+    const colors = { logistic:'#f2b96a', gompertz:'#ef6b77', bass:'#59d4a9' };
+    for (const m of DATA.models) {
+      if (m.status !== 'ok') continue;
+      const curve = modelCurve(m, f.t_grid_hours).map(
+        (y,i) => ({x: f.t_grid_hours[i], y: y * (1 + adj)}));
+      ds.push({
+        label: m.name,
+        data: curve,
+        borderColor: colors[m.name] || '#8a93a2',
+        borderDash: [4,4], borderWidth:1.5, pointRadius:0,
+        fill:false, order: 2,
+      });
+    }
+  }
+  chartAgg.data.datasets = ds;
+  chartAgg.update('none');
+}
+
+function modelCurve(m, tgrid) {
+  const [K, a, b] = m.params;
+  if (m.name === 'logistic') return tgrid.map(t => K / (1 + Math.exp(-a*(t - b))));
+  if (m.name === 'gompertz') return tgrid.map(t => K * Math.exp(-a * Math.exp(-b*t)));
+  if (m.name === 'bass') {
+    return tgrid.map(t => {
+      const pq = a + b;
+      return K * (1 - Math.exp(-pq*t)) / (1 + (b/a)*Math.exp(-pq*t));
+    });
+  }
+  return tgrid.map(() => 0);
+}
+
+// ---------------------------------------------------------------------------
+// Model table
+// ---------------------------------------------------------------------------
+function renderModelTable() {
+  const tbody = document.querySelector('#model-table tbody');
+  tbody.innerHTML = '';
+  for (const m of DATA.models) {
+    const tr = document.createElement('tr');
+    if (m.status !== 'ok') {
+      tr.innerHTML = `<td>${m.name}</td><td colspan="3" class="num" style="color:var(--muted)">fit 실패</td>`;
+    } else {
+      tr.innerHTML = `
+        <td>${m.name}</td>
+        <td class="num">${fmt(m.predicted_K)}</td>
+        <td class="num">${m.aicc.toFixed(1)}</td>
+        <td class="num">${(m.weight*100).toFixed(1)}%</td>`;
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Velocity chart
+// ---------------------------------------------------------------------------
+function renderVelocityChart() {
+  const ctx = document.getElementById('chart-velocity').getContext('2d');
+  const labels = DATA.velocities.map(v => v.to.slice(5));
+  const rates  = DATA.velocities.map(v => v.rate_per_hour);
+  chartVel = new Chart(ctx, {
+    type:'bar',
+    data:{ labels, datasets:[{
+      label:'판매 속도 (장/시간)',
+      data: rates, backgroundColor:'#7c9eff'
+    }]},
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      scales:{
+        x:{ grid:{color:'#2a2f3a'}, ticks:{color:'#8a93a2'} },
+        y:{ grid:{color:'#2a2f3a'}, ticks:{color:'#8a93a2'},
+            title:{display:true, text:'장/시간', color:'#8a93a2'} }
+      },
+      plugins:{ legend:{display:false} }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Heatmap (Date × Start Time grid)
+// ---------------------------------------------------------------------------
+function renderHeatmap(mode) {
+  const container = document.getElementById('heatmap');
+  container.innerHTML = '';
+
+  // unique sorted dates
+  const dates = [...new Set(DATA.showings.map(s => s.Date))].sort();
+  const grid = document.createElement('div');
+  grid.className = 'heatmap';
+  grid.style.gridTemplateColumns = `100px repeat(${SLOTS.length}, 1fr)`;
+  // header row
+  const empty = document.createElement('div'); empty.className='hhead';
+  grid.appendChild(empty);
+  for (const s of SLOTS) {
+    const h = document.createElement('div');
+    h.className='hhead'; h.textContent = fmtTime(s);
+    grid.appendChild(h);
+  }
+  // body
+  for (const d of dates) {
+    const dowLabel = document.createElement('div');
+    dowLabel.className='hhead';
+    const dowEn = DOW_KR[new Date(d).toLocaleDateString('en-US',{weekday:'long'})] || '';
+    dowLabel.innerHTML = `${d.slice(5)}<br><span style="color:var(--muted)">(${dowEn})</span>`;
+    grid.appendChild(dowLabel);
+    for (const t of SLOTS) {
+      const s = DATA.showings.find(x => x.Date === d && x.start_time === t);
+      const cell = document.createElement('div');
+      cell.className = 'hcell';
+      if (!s) {
+        cell.style.background = 'transparent';
+        cell.textContent = '';
+      } else {
+        const occ = mode === 'current' ? s.occ : s.final_occ_est;
+        cell.style.background = occColor(occ);
+        cell.style.color = occ > 0.5 ? '#0f1115' : '#e8ebef';
+        cell.innerHTML = `${(occ*100).toFixed(0)}${s.special?'*':''}`;
+        cell.title = `${d} ${fmtTime(t)}\n`
+          + `현재: ${s.sold}/${s.seats} (${pct(s.occ)})\n`
+          + `예측: ${s.final_sold_est}/${s.seats} (${pct(s.final_occ_est)})\n`
+          + `P5–P95: ${pct(s.p5_occ)} ~ ${pct(s.p95_occ)}`
+          + (s.special ? '\n(special: 사전할당/VIP 추정)' : '');
+      }
+      grid.appendChild(cell);
+    }
+  }
+  container.appendChild(grid);
+}
+
+// ---------------------------------------------------------------------------
+// Per-showing table
+// ---------------------------------------------------------------------------
+function renderShowingTable() {
+  const tbody = document.querySelector('#showing-table tbody');
+  const filter = document.getElementById('filter-date').value.trim();
+  const sort   = document.getElementById('sort-by').value;
+  const hideSp = document.getElementById('hide-special').checked;
+
+  let rows = DATA.showings.slice();
+  if (filter) rows = rows.filter(r => r.Date.includes(filter));
+  if (hideSp) rows = rows.filter(r => !r.special);
+
+  rows.sort((a,b) => {
+    if (sort === 'date') {
+      if (a.Date !== b.Date) return a.Date.localeCompare(b.Date);
+      return a.start_time - b.start_time;
+    }
+    if (sort === 'occ-desc')   return b.occ - a.occ;
+    if (sort === 'final-desc') return b.final_occ_est - a.final_occ_est;
+    if (sort === 'gap')        return (b.final_occ_est - b.occ) - (a.final_occ_est - a.occ);
+    return 0;
+  });
+
+  tbody.innerHTML = '';
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.Date}</td>
+      <td>${DOW_KR[r.dow] || r.dow}</td>
+      <td>${fmtTime(r.start_time)}</td>
+      <td class="num">${r.sold}/${r.seats}</td>
+      <td>
+        <div class="bar ${r.special?'special':''}"><span style="width:${(r.occ*100).toFixed(1)}%"></span></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${pct(r.occ)}</div>
+      </td>
+      <td>
+        <div class="bar ${r.special?'special':''}"><span style="width:${(r.final_occ_est*100).toFixed(1)}%"></span></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${pct(r.final_occ_est)}</div>
+      </td>
+      <td class="num">${pct(r.p5_occ)} ~ ${pct(r.p95_occ)}</td>
+      <td>${r.special?'<span class="pill special">special</span>':''}${r.occ>=1?'<span class="pill sold-out">SOLD OUT</span>':''}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Meta panel
+// ---------------------------------------------------------------------------
+function renderMeta() {
+  const m = DATA.meta;
+  document.getElementById('meta-snaps').textContent = m.num_snapshots;
+  document.getElementById('meta-first').textContent = m.first_snapshot;
+  document.getElementById('meta-last').textContent  = m.last_snapshot;
+  document.getElementById('meta-gen').textContent   = m.generated_at;
+  document.getElementById('meta-bu').textContent    =
+    fmt(DATA.aggregate_forecast.final.bottom_up);
+}
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+function bindControls() {
+  const adj = document.getElementById('rate-adj');
+  const adjLabel = document.getElementById('rate-adj-label');
+  adj.addEventListener('input', () => {
+    const v = parseInt(adj.value, 10);
+    adjLabel.textContent = (v >= 0 ? '+' : '') + v + '%';
+    updateAggChart();
+  });
+  for (const id of ['show-band-95','show-band-75','show-models']) {
+    document.getElementById(id).addEventListener('change', updateAggChart);
+  }
+  for (const r of document.querySelectorAll('input[name="hmap"]')) {
+    r.addEventListener('change', e => renderHeatmap(e.target.value));
+  }
+  document.getElementById('filter-date').addEventListener('input', renderShowingTable);
+  document.getElementById('sort-by').addEventListener('change', renderShowingTable);
+  document.getElementById('hide-special').addEventListener('change', renderShowingTable);
+
+  // Upload preview (summary only, no analysis rerun)
+  const box = document.getElementById('upload-box');
+  const inp = document.getElementById('upload-input');
+  const out = document.getElementById('upload-result');
+  box.addEventListener('click', () => inp.click());
+  box.addEventListener('dragover', e => { e.preventDefault(); box.style.borderColor='#7c9eff'; });
+  box.addEventListener('dragleave', () => { box.style.borderColor=''; });
+  box.addEventListener('drop', e => {
+    e.preventDefault(); box.style.borderColor='';
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  inp.addEventListener('change', e => {
+    if (e.target.files.length) handleFile(e.target.files[0]);
+  });
+  function handleFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const lines = reader.result.split(/\r?\n/).filter(Boolean);
+      const header = lines[0].split(',');
+      const idx = header.findIndex(h => h.includes('Tickets Sold'));
+      if (idx < 0) { out.textContent = 'CSV 형식이 인식되지 않습니다.'; return; }
+      let sum = 0, n = 0;
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',');
+        if (cols[idx]) { sum += parseInt(cols[idx],10) || 0; n++; }
+      }
+      const last = DATA.aggregate_forecast.observed_y.slice(-1)[0];
+      out.innerHTML = `<strong>${file.name}</strong><br>`
+        + `누적 판매: <strong>${fmt(sum)}장</strong> (${n}개 회차)<br>`
+        + `직전 스냅샷 대비 <strong>${sum>=last?'+':''}${fmt(sum-last)}장</strong><br>`
+        + `<em>정식 분석을 하려면 snapshots/ 에 저장 후 <code>python3 analyze.py</code> 실행</em>`;
+    };
+    reader.readAsText(file);
+  }
+}
+</script>
+</body>
+</html>
