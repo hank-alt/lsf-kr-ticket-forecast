@@ -12,6 +12,7 @@ https://YOUR_ID.github.io/lsf-kr-ticket-forecast/
 
 - **3-모델 앙상블** (Logistic + Gompertz + Bass diffusion) · AICc 기반 가중평균
 - **Moving block bootstrap + Dirichlet Monte Carlo** 로 P5–P95 신뢰구간
+- **1차 + 2차 판매 분리 예측**: 현재 예매 가능한 회차(1차)와 아직 미오픈인 후반 회차(2차)를 별도 컴포넌트로 추정 후 합산
 - **Top-down ↔ Bottom-up reconciliation**: 전체 앙상블 예측과 회차별 합이 자동 일치
 - **Special 회차 자동 감지**: VIP/사전할당으로 추정되는 회차(만석 또는 큰 판매점프)는 별도 플래그 처리 후 일반 모델에서 제외
 

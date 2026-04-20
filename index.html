@@ -102,7 +102,12 @@
       <div class="value" id="kpi-sold">–</div>
     </div>
     <div class="kpi">
-      <div class="label">예측 최종 (P50)</div>
+      <div class="label">총 공연 P50 (1차 + 2차)</div>
+      <div class="value" id="kpi-combined-p50" style="color:var(--accent2)">–</div>
+      <div class="value small" id="kpi-combined-band" style="color:var(--muted)">–</div>
+    </div>
+    <div class="kpi">
+      <div class="label">1차만 (P50)</div>
       <div class="value" id="kpi-p50">–</div>
       <div class="value small" id="kpi-band" style="color:var(--muted)">–</div>
     </div>
@@ -114,6 +119,50 @@
 </header>
 
 <main>
+  <!-- 0. Phase breakdown (Phase 1 + Phase 2 projection) -->
+  <section class="panel full" id="phase-panel">
+    <h2>공연 전체 예측 — 1차 + 2차 판매</h2>
+    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:14px;">
+      <div style="padding:14px; background:var(--panel2); border-radius:8px;">
+        <div style="color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">
+          1차 (현재 예매중)
+        </div>
+        <div style="font-size:22px; font-weight:600; margin-top:4px; font-variant-numeric:tabular-nums;"
+             id="pb-phase1-p50">–</div>
+        <div style="color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums;"
+             id="pb-phase1-band">–</div>
+        <div style="color:var(--muted); font-size:11px; margin-top:6px;" id="pb-phase1-meta">–</div>
+      </div>
+      <div style="padding:14px; background:var(--panel2); border-radius:8px; border:1px dashed var(--warn);">
+        <div style="color:var(--warn); font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">
+          2차 (예매 미오픈, 추정)
+        </div>
+        <div style="font-size:22px; font-weight:600; margin-top:4px; font-variant-numeric:tabular-nums;"
+             id="pb-phase2-p50">–</div>
+        <div style="color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums;"
+             id="pb-phase2-band">–</div>
+        <div style="color:var(--muted); font-size:11px; margin-top:6px;" id="pb-phase2-meta">–</div>
+      </div>
+      <div style="padding:14px; background:linear-gradient(135deg, rgba(124,158,255,0.1), rgba(89,212,169,0.1)); border-radius:8px; border:1px solid var(--accent2);">
+        <div style="color:var(--accent2); font-size:11px; text-transform:uppercase; letter-spacing:0.05em;">
+          결합 총 예측
+        </div>
+        <div style="font-size:22px; font-weight:600; margin-top:4px; font-variant-numeric:tabular-nums;"
+             id="pb-combined-p50">–</div>
+        <div style="color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums;"
+             id="pb-combined-band">–</div>
+        <div style="color:var(--muted); font-size:11px; margin-top:6px;">
+          1차 + 2차. 2차 오픈 후 스냅샷이 쌓이면 이 추정치가 실측으로 자동 교체됩니다.
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:14px; font-size:12px; color:var(--muted);">
+      💡 2차 예측 = 1차 회차당 전환율을 후반 21일 168회차에 동일 적용.
+      불확실성이 크므로 P5–P95 폭을 1차보다 넓게 잡음 (×0.65 / ×1.50).
+      실제 2차가 오픈되어 판매 데이터가 쌓이면 모델이 자연스럽게 교체합니다.
+    </div>
+  </section>
+
   <!-- 1. Aggregate forecast chart -->
   <section class="panel full">
     <div class="controls">
@@ -284,6 +333,7 @@ fetch('data.json')
 
 function render() {
   renderHeader();
+  renderPhaseBreakdown();
   renderAggChart();
   renderModelTable();
   renderVelocityChart();
@@ -291,6 +341,22 @@ function render() {
   renderShowingTable();
   renderMeta();
   bindControls();
+}
+
+function renderPhaseBreakdown() {
+  const pb = DATA.phase_breakdown;
+  if (!pb) { document.getElementById('phase-panel').style.display='none'; return; }
+  const p1 = pb.phase1_forecast, p2 = pb.phase2_forecast, c = pb.combined_forecast;
+  document.getElementById('pb-phase1-p50').textContent   = fmt(p1.p50);
+  document.getElementById('pb-phase1-band').textContent  = `P5 ${fmt(p1.p5)} – P95 ${fmt(p1.p95)}`;
+  document.getElementById('pb-phase1-meta').textContent  =
+    `${fmt(pb.phase1_seats)}석 / 전환율 ${(pb.phase1_conversion.p50*100).toFixed(1)}%`;
+  document.getElementById('pb-phase2-p50').textContent   = fmt(p2.p50);
+  document.getElementById('pb-phase2-band').textContent  = `P5 ${fmt(p2.p5)} – P95 ${fmt(p2.p95)}`;
+  document.getElementById('pb-phase2-meta').textContent  =
+    `${fmt(pb.phase2_seats)}석 추정 / 1차 전환율 이식`;
+  document.getElementById('pb-combined-p50').textContent  = fmt(c.p50);
+  document.getElementById('pb-combined-band').textContent = `P5 ${fmt(c.p5)} – P95 ${fmt(c.p95)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +373,13 @@ function renderHeader() {
   document.getElementById('kpi-band').textContent =
     `P5 ${fmt(f.p5)} ~ P95 ${fmt(f.p95)}`;
   document.getElementById('kpi-K').textContent = fmt(m.total_seats);
+  // Combined (Phase 1 + Phase 2)
+  if (DATA.phase_breakdown) {
+    const c = DATA.phase_breakdown.combined_forecast;
+    document.getElementById('kpi-combined-p50').textContent = fmt(c.p50);
+    document.getElementById('kpi-combined-band').textContent =
+      `P5 ${fmt(c.p5)} ~ P95 ${fmt(c.p95)}`;
+  }
   // Period & progress
   if (m.event_start && m.event_end) {
     document.getElementById('kpi-period').textContent =

@@ -55,6 +55,12 @@ SPECIAL_OCC          = 0.95       # occupancy threshold for "special" tag
 BENCH_MATURITY_DAYS  = 5          # days-since-open for prior-benchmark set
 BENCH_MIN_OCC        = 0.50       # min final occupancy to qualify as benchmark
 
+# Phase-2 (later-batch) projection.
+# Showings beyond what the CSV currently lists are assumed to convert at the
+# same rate as Phase 1 (currently-listed showings). Multiplier widens P5-P95.
+PHASE2_CONV_LOW_MULT  = 0.65      # P5  conversion = phase1_conv * this
+PHASE2_CONV_HIGH_MULT = 1.50      # P95 conversion = phase1_conv * this
+
 RNG = np.random.default_rng(42)
 
 
@@ -410,7 +416,36 @@ def main():
         p5 = p25 = p50 = p75 = p95 = central.copy()
         final_p5 = final_p50 = final_p95 = float(central[-1])
 
-    # Per-showing, reconciled to aggregate
+    # ---- Phase-2 projection ----
+    # CSV currently lists 'csv_seats' = Phase 1 bookable seats.
+    # Scheduled - CSV = Phase 2 seats (not yet for sale).
+    # Phase-1 conversion rate (central) -> applied to Phase-2 seat pool.
+    phase1_seats  = csv_seats
+    phase2_seats  = max(scheduled_seats - csv_seats, 0)
+    phase1_conv   = final_p50 / phase1_seats if phase1_seats > 0 else 0.0
+    # P5/P95 conversion widened by multipliers (demand uncertainty for a batch
+    # that hasn't opened yet is materially larger than within-batch noise).
+    phase1_conv_low  = (final_p5  / phase1_seats if phase1_seats > 0 else 0.0) * PHASE2_CONV_LOW_MULT
+    phase1_conv_high = (final_p95 / phase1_seats if phase1_seats > 0 else 0.0) * PHASE2_CONV_HIGH_MULT
+    phase2_p5_sales  = phase2_seats * phase1_conv_low
+    phase2_p50_sales = phase2_seats * phase1_conv
+    phase2_p95_sales = phase2_seats * phase1_conv_high
+    combined_p5  = final_p5  + phase2_p5_sales
+    combined_p50 = final_p50 + phase2_p50_sales
+    combined_p95 = final_p95 + phase2_p95_sales
+
+    print(f"[phase2] phase1 seats={phase1_seats}, phase2 seats={phase2_seats}",
+          file=sys.stderr)
+    print(f"[phase2] phase1 conv: p5={phase1_conv_low:.3f} p50={phase1_conv:.3f} "
+          f"p95={phase1_conv_high:.3f}", file=sys.stderr)
+    print(f"[phase2] phase2 sales: p5={phase2_p5_sales:.0f} "
+          f"p50={phase2_p50_sales:.0f} p95={phase2_p95_sales:.0f}",
+          file=sys.stderr)
+    print(f"[phase2] combined total: p5={combined_p5:.0f} "
+          f"p50={combined_p50:.0f} p95={combined_p95:.0f}", file=sys.stderr)
+
+    # Per-showing, reconciled to aggregate (Phase 1 only — Phase 2 showings
+    # aren't listed yet, so we can't assign per-showing yet)
     showings = per_showing_forecast(snaps, final_p50, final_p5, final_p95)
 
     # Reconciliation note: compare top-down vs bottom-up
@@ -510,6 +545,30 @@ def main():
                 "p50": final_p50,
                 "p95": final_p95,
                 "bottom_up": int(bottom_up),
+            },
+        },
+        "phase_breakdown": {
+            "phase1_seats":   phase1_seats,
+            "phase2_seats":   phase2_seats,
+            "phase1_conversion": {
+                "p5":  phase1_conv_low,
+                "p50": phase1_conv,
+                "p95": phase1_conv_high,
+            },
+            "phase1_forecast": {
+                "p5":  float(final_p5),
+                "p50": float(final_p50),
+                "p95": float(final_p95),
+            },
+            "phase2_forecast": {
+                "p5":  float(phase2_p5_sales),
+                "p50": float(phase2_p50_sales),
+                "p95": float(phase2_p95_sales),
+            },
+            "combined_forecast": {
+                "p5":  float(combined_p5),
+                "p50": float(combined_p50),
+                "p95": float(combined_p95),
             },
         },
         "models":    model_summary,
