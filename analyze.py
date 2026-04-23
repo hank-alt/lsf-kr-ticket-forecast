@@ -61,6 +61,18 @@ BENCH_MIN_OCC        = 0.50       # min final occupancy to qualify as benchmark
 PHASE2_CONV_LOW_MULT  = 0.65      # P5  conversion = phase1_conv * this
 PHASE2_CONV_HIGH_MULT = 1.50      # P95 conversion = phase1_conv * this
 
+# Segment definitions: (day-of-week bucket, time bucket).
+# Fri 포함 "주말" 처리 — 국내 티켓 데이터에서 금요일은 주말 패턴에 더 가까움.
+WEEKEND_DOWS = {4, 5, 6}          # Fri, Sat, Sun (Python weekday: Mon=0)
+DAY_SLOT_MAX = 1430               # <= 14:30 = 낮, > 14:30 = 밤
+
+SEGMENT_LABELS = {
+    ("weekday", "day"):   "주중 낮",
+    ("weekday", "night"): "주중 밤",
+    ("weekend", "day"):   "주말 낮",
+    ("weekend", "night"): "주말 밤",
+}
+
 RNG = np.random.default_rng(42)
 
 
@@ -342,6 +354,61 @@ def per_showing_forecast(
 
 
 # ---------------------------------------------------------------------------
+# Segment analysis
+# ---------------------------------------------------------------------------
+def classify_segment(date_str: str, start_time: int) -> tuple[str, str]:
+    dow = pd.Timestamp(date_str).weekday()
+    dow_bucket = "weekend" if dow in WEEKEND_DOWS else "weekday"
+    time_bucket = "day" if start_time <= DAY_SLOT_MAX else "night"
+    return (dow_bucket, time_bucket)
+
+
+def segment_analysis(snaps: list[dict]) -> dict:
+    """
+    For each segment, compute:
+      - total seats (scheduled within CSV)
+      - current sold
+      - current occupancy
+      - benchmark terminal occupancy (median of mature showings within segment)
+      - projected terminal sold (remaining showings -> benchmark × seats)
+    """
+    latest = snaps[-1]["df"].copy()
+    latest["segment"] = latest.apply(
+        lambda r: classify_segment(r["Date"], int(r["start_time"])), axis=1
+    )
+    latest["occ"] = latest["sold"] / latest["seats"]
+
+    results = {}
+    for seg, g in latest.groupby("segment"):
+        label = SEGMENT_LABELS.get(seg, f"{seg[0]}/{seg[1]}")
+        n_show = len(g)
+        seats = int(g["seats"].sum())
+        sold  = int(g["sold"].sum())
+        occ   = sold / seats if seats else 0
+        # Benchmark: median occ of the non-empty showings in this segment
+        nonzero = g[g["occ"] > 0.02]
+        bench = float(nonzero["occ"].median()) if len(nonzero) >= 3 else occ
+        # Terminal projection: max(current occ, benchmark) per showing, summed
+        terminal_per_show = g[["occ", "seats"]].copy()
+        terminal_per_show["terminal_occ"] = terminal_per_show["occ"].combine(
+            bench, max
+        ).clip(upper=1.0)
+        terminal_sold = int((terminal_per_show["terminal_occ"] * terminal_per_show["seats"]).round().sum())
+        results[f"{seg[0]}_{seg[1]}"] = {
+            "label": label,
+            "showings": n_show,
+            "seats": seats,
+            "current_sold": sold,
+            "current_occ": round(occ, 4),
+            "benchmark_occ": round(bench, 4),
+            "terminal_sold": terminal_sold,
+            "terminal_occ":  round(terminal_sold / seats, 4) if seats else 0,
+            "headroom":      terminal_sold - sold,   # 자연 수요만으로 남은 여유
+        }
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 def main():
@@ -443,6 +510,10 @@ def main():
           file=sys.stderr)
     print(f"[phase2] combined total: p5={combined_p5:.0f} "
           f"p50={combined_p50:.0f} p95={combined_p95:.0f}", file=sys.stderr)
+
+    # ---- Segment analysis (weekday/weekend × day/night) ----
+    segments = segment_analysis(snaps)
+    segment_terminal_sum = sum(s["terminal_sold"] for s in segments.values())
 
     # Per-showing, reconciled to aggregate (Phase 1 only — Phase 2 showings
     # aren't listed yet, so we can't assign per-showing yet)
@@ -546,6 +617,12 @@ def main():
                 "p95": final_p95,
                 "bottom_up": int(bottom_up),
             },
+        },
+        "segments": segments,
+        "segment_summary": {
+            "terminal_sum":   int(segment_terminal_sum),
+            "current_sum":    int(sum(s["current_sold"] for s in segments.values())),
+            "headroom_sum":   int(sum(s["headroom"] for s in segments.values())),
         },
         "phase_breakdown": {
             "phase1_seats":   phase1_seats,

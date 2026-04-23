@@ -20,20 +20,30 @@ https://YOUR_ID.github.io/lsf-kr-ticket-forecast/
 
 ## 사용법 (스냅샷 추가할 때마다)
 
+### 방법 A: GitHub 웹에서 CSV 만 올리기 (추천)
+
+1. 레포 페이지 → `snapshots/` 폴더 클릭
+2. **Add file → Upload files** → 새 CSV 드래그 → Commit
+3. **GitHub Actions 가 자동으로 `analyze.py` 를 돌리고 `data.json` 을 커밋**
+4. 약 1-2분 후 대시보드 자동 갱신
+
+> ⚠ 첫 배포 시 **레포 Settings → Actions → General → Workflow permissions** 를
+> "Read and write permissions" 로 설정해야 워크플로우가 data.json 을 커밋할 수 있음.
+
+### 방법 B: 로컬에서 직접 실행
+
 ```bash
-# 1. 슬랙 등에서 받은 CSV 를 snapshots/ 에 넣기
+# 1. 새 CSV 를 snapshots/ 에 복사
 cp ~/Downloads/LotteCinema_*.csv snapshots/
 
-# 2. 분석 실행 (data.json 갱신)
+# 2. 분석 실행
 python3 analyze.py
 
-# 3. 커밋 푸시
+# 3. 커밋 + 푸시
 git add snapshots/ data.json
 git commit -m "update: $(date +%Y-%m-%d_%H%M)"
 git push
 ```
-
-약 1분 후 GitHub Pages 가 자동으로 배포 갱신.
 
 ---
 

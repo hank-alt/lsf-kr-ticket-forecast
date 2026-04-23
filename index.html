@@ -119,8 +119,70 @@
 </header>
 
 <main>
-  <!-- 0. Phase breakdown (Phase 1 + Phase 2 projection) -->
-  <section class="panel full" id="phase-panel">
+  <!-- 0a. Segment breakdown + external demand + viral (v3) -->
+  <section class="panel full" id="v3-panel">
+    <h2 style="margin-bottom:12px;">최종 판매 예측 — 세그먼트 + 외부 자극</h2>
+    <div style="padding:10px 14px; background:rgba(124,158,255,0.06); border-left:3px solid var(--accent); border-radius:4px; margin-bottom:14px; font-size:12px;">
+      💡 단일 로지스틱 대신 <strong>주중/주말 × 낮/밤 4개 세그먼트별 자연 터미널 점유율</strong>을 각각 계산해서 더함. 외부 자극(쿠폰 캠페인 / 제휴 / 바이럴)은 별도 입력으로 덧셈.
+    </div>
+
+    <!-- Segment cards grid -->
+    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin-bottom:16px;" id="v3-segments"></div>
+
+    <!-- Summary stack -->
+    <div style="background:var(--panel2); border-radius:8px; padding:14px;">
+      <div style="display:grid; grid-template-columns: 1fr auto auto; gap:8px 24px; font-variant-numeric:tabular-nums;">
+        <div style="color:var(--muted); font-size:12px;">A. 자연 수요 1차 (4 세그먼트 합)</div>
+        <div id="v3-natural-p1" style="font-weight:600;">–</div>
+        <div style="color:var(--muted); font-size:11px;" id="v3-natural-p1-note">–</div>
+
+        <div style="color:var(--muted); font-size:12px;">B. 자연 수요 2차 (1차 전환율 이식)</div>
+        <div id="v3-natural-p2" style="font-weight:600;">–</div>
+        <div style="color:var(--muted); font-size:11px;" id="v3-natural-p2-note">–</div>
+
+        <div style="color:var(--muted); font-size:12px;">C. 외부 캠페인 (입력값 합)</div>
+        <div id="v3-external" style="font-weight:600; color:var(--accent2);">+0</div>
+        <div style="color:var(--muted); font-size:11px;">아래 입력 참고</div>
+
+        <div style="color:var(--muted); font-size:12px;">D. 바이럴 효과 (<span id="v3-viral-pct">0%</span>)</div>
+        <div id="v3-viral" style="font-weight:600; color:var(--warn);">+0</div>
+        <div style="color:var(--muted); font-size:11px;">누적 관람자 × 계수</div>
+
+        <div style="border-top:1px solid var(--grid); padding-top:8px; color:var(--text); font-weight:600;">
+          예측 최종 (A + B + C + D)
+        </div>
+        <div id="v3-total" style="border-top:1px solid var(--grid); padding-top:8px; font-size:22px; font-weight:700; color:var(--accent2);">–</div>
+        <div id="v3-total-occ" style="border-top:1px solid var(--grid); padding-top:8px; color:var(--muted); font-size:11px;">–</div>
+      </div>
+    </div>
+
+    <!-- External demand inputs -->
+    <div style="margin-top:18px;">
+      <h3 style="font-size:14px; margin:0 0 10px; color:var(--text);">외부 캠페인 입력</h3>
+      <table style="font-size:13px;">
+        <thead><tr>
+          <th>캠페인</th>
+          <th class="num">대상/수신</th>
+          <th class="num">사용률</th>
+          <th class="num">1인당 티켓</th>
+          <th class="num">예상 추가</th>
+        </tr></thead>
+        <tbody id="v3-campaigns"></tbody>
+      </table>
+    </div>
+
+    <!-- Viral slider -->
+    <div style="margin-top:18px; display:flex; align-items:center; gap:16px;">
+      <label style="font-size:13px; color:var(--text); min-width:140px;">바이럴 계수</label>
+      <input type="range" id="v3-viral-slider" min="0" max="50" value="0" style="flex:1; max-width:320px;" />
+      <span style="font-size:12px; color:var(--muted);">
+        누적 관람자 1명당 추가 티켓 수 × <span id="v3-viral-coef">0.00</span> (0 = 없음, 0.5 = 강한 재관람/입소문)
+      </span>
+    </div>
+  </section>
+
+  <!-- 0b. Old Phase breakdown (kept for context, deprecated) -->
+  <section class="panel full" id="phase-panel" style="display:none;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:12px;">
       <h2 style="margin:0;">공연 전체 예측 — 1차 + 2차 판매</h2>
       <div style="display:flex; align-items:center; gap:10px; font-size:12px;">
@@ -348,6 +410,7 @@ fetch('data.json')
 
 function render() {
   renderHeader();
+  renderV3();
   renderPhaseBreakdown();
   renderAggChart();
   renderModelTable();
@@ -356,6 +419,138 @@ function render() {
   renderShowingTable();
   renderMeta();
   bindControls();
+}
+
+// ---------------------------------------------------------------------------
+// v3: segment + external + viral
+// ---------------------------------------------------------------------------
+
+// Default campaign inputs — adjust reasonable defaults that user can edit
+const V3_CAMPAIGNS_DEFAULT = [
+  {id:'c1', label:'4/20 서베이 5천원 쿠폰',       target:30000, redemption:3.0, perUser:1.5,
+           hint:'수신 3만명 가정'},
+  {id:'c2', label:'4/17~ N차 관람 쿠폰',           target:'currentTicketBuyers', redemption:15.0, perUser:1.0,
+           hint:'현재 예매자 중 일부 재관람'},
+  {id:'c3', label:'L-Point 가입자 5천원 쿠폰 (팝업)', target:30000, redemption:2.0, perUser:1.2,
+           hint:'팝업 노출 → 쿠폰 사용 전환 보수 추정'},
+];
+let v3State = {
+  campaigns: JSON.parse(JSON.stringify(V3_CAMPAIGNS_DEFAULT)),
+  viralCoef: 0,
+};
+
+function campaignTickets(c, currentSold) {
+  const target = (c.target === 'currentTicketBuyers') ? currentSold : (+c.target || 0);
+  return Math.round(target * (c.redemption/100) * (c.perUser||1));
+}
+
+function renderV3() {
+  const segs = DATA.segments;
+  if (!segs) { document.getElementById('v3-panel').style.display='none'; return; }
+
+  // Segment cards
+  const segEl = document.getElementById('v3-segments');
+  segEl.innerHTML = Object.entries(segs).map(([key, s]) => {
+    const uplift = s.terminal_sold - s.current_sold;
+    return `
+      <div style="background:var(--panel2); border-radius:8px; padding:12px;">
+        <div style="color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em;">${s.label}</div>
+        <div style="margin-top:4px; font-size:18px; font-weight:600; font-variant-numeric:tabular-nums;">${fmt(s.terminal_sold)}</div>
+        <div style="color:var(--muted); font-size:11px;">${s.showings}회차 · ${fmt(s.seats)}석</div>
+        <div style="margin-top:6px; font-size:11px;">
+          현재 ${fmt(s.current_sold)} (${pct(s.current_occ)}) →
+          <span style="color:var(--accent2)">${pct(s.terminal_occ)}</span>
+        </div>
+        <div style="font-size:11px; color:var(--muted);">벤치마크 ${pct(s.benchmark_occ)} · 헤드룸 +${fmt(uplift)}</div>
+      </div>
+    `;
+  }).join('');
+
+  // Campaigns table
+  renderCampaigns();
+
+  // Wire slider if not already
+  const vs = document.getElementById('v3-viral-slider');
+  vs.oninput = () => {
+    v3State.viralCoef = parseInt(vs.value,10) / 100;
+    recomputeV3();
+  };
+
+  recomputeV3();
+}
+
+function renderCampaigns() {
+  const body = document.getElementById('v3-campaigns');
+  const currentSold = DATA.segment_summary.current_sum;
+  body.innerHTML = v3State.campaigns.map((c,i) => {
+    const tickets = campaignTickets(c, currentSold);
+    const targetDisplay = c.target === 'currentTicketBuyers'
+      ? `현재 예매자 (${fmt(currentSold)})`
+      : `<input type="number" value="${c.target}" min="0" step="100" data-ci="${i}" data-f="target" style="width:90px; background:var(--panel2); color:var(--text); border:1px solid var(--grid); border-radius:4px; padding:3px 6px; text-align:right; font-family:inherit; font-variant-numeric:tabular-nums;">`;
+    return `
+      <tr>
+        <td>${c.label}${c.hint?`<div style="font-size:10px;color:var(--muted)">${c.hint}</div>`:''}</td>
+        <td class="num">${targetDisplay}</td>
+        <td class="num"><input type="number" value="${c.redemption}" min="0" max="100" step="0.5" data-ci="${i}" data-f="redemption" style="width:60px; background:var(--panel2); color:var(--text); border:1px solid var(--grid); border-radius:4px; padding:3px 6px; text-align:right; font-family:inherit;">%</td>
+        <td class="num"><input type="number" value="${c.perUser}" min="0" max="10" step="0.1" data-ci="${i}" data-f="perUser" style="width:60px; background:var(--panel2); color:var(--text); border:1px solid var(--grid); border-radius:4px; padding:3px 6px; text-align:right; font-family:inherit;"></td>
+        <td class="num" style="color:var(--accent2); font-weight:600;">+${fmt(tickets)}</td>
+      </tr>
+    `;
+  }).join('');
+  // Bind input changes
+  body.querySelectorAll('input').forEach(inp => {
+    inp.oninput = () => {
+      const i = parseInt(inp.dataset.ci,10);
+      const f = inp.dataset.f;
+      v3State.campaigns[i][f] = parseFloat(inp.value) || 0;
+      // Re-render just the tickets column (lazy: whole table)
+      renderCampaigns();
+      recomputeV3();
+    };
+  });
+}
+
+function recomputeV3() {
+  const segs = DATA.segments;
+  const pb   = DATA.phase_breakdown;
+
+  // A: natural demand Phase 1 = sum of segment terminals
+  const A = DATA.segment_summary.terminal_sum;
+
+  // B: natural demand Phase 2 — scale segment terminal occupancies onto
+  //    the Phase 2 seat pool (approximated as same segment split).
+  const seatRatio = pb.phase2_seats / Math.max(pb.phase1_seats, 1);
+  const B = Math.round(
+    Object.values(segs).reduce((acc, s) => acc + (s.terminal_occ * s.seats * seatRatio), 0)
+  );
+
+  // C: external campaigns
+  const currentSold = DATA.segment_summary.current_sum;
+  const C = v3State.campaigns.reduce((acc, c) => acc + campaignTickets(c, currentSold), 0);
+
+  // D: viral = viralCoef × 누적 관람자 (approximated as "already seen" audience =
+  //    Phase 1 + Phase 2 natural demand; assumes bonus scales with audience so far)
+  const D = Math.round((A + B) * v3State.viralCoef * 0.15);
+  //   0.15 = 현실적 상한 스케일 (계수 0.5일 때 자연 수요의 7.5% 정도 boost)
+
+  const total = A + B + C + D;
+  const totalSeats = DATA.meta.total_seats;
+  const occPct = (total / totalSeats * 100).toFixed(1);
+
+  document.getElementById('v3-natural-p1').textContent = fmt(A);
+  document.getElementById('v3-natural-p1-note').textContent = `${fmt(pb.phase1_seats)}석 · 세그먼트 합`;
+  document.getElementById('v3-natural-p2').textContent = fmt(B);
+  document.getElementById('v3-natural-p2-note').textContent = `${fmt(pb.phase2_seats)}석 · 동일 전환율`;
+  document.getElementById('v3-external').textContent = `+${fmt(C)}`;
+  document.getElementById('v3-viral').textContent = `+${fmt(D)}`;
+  document.getElementById('v3-viral-pct').textContent = `${(v3State.viralCoef*100).toFixed(0)}%`;
+  document.getElementById('v3-viral-coef').textContent = v3State.viralCoef.toFixed(2);
+  document.getElementById('v3-total').textContent = fmt(total);
+  document.getElementById('v3-total-occ').textContent = `${occPct}% · ${fmt(totalSeats)}석 대비`;
+
+  // Sync top KPI combined
+  document.getElementById('kpi-combined-p50').textContent = fmt(total);
+  document.getElementById('kpi-combined-band').textContent = `세그먼트+외부+바이럴 합계`;
 }
 
 function renderPhaseBreakdown() {
