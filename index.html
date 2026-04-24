@@ -328,17 +328,21 @@
     </div>
   </section>
 
-  <!-- 6. Upload (client-side preview) -->
-  <section class="panel">
-    <h2>신규 CSV 미리보기 (선택)</h2>
-    <div class="upload" id="upload-box">
-      CSV 파일을 여기로 드래그하거나 클릭하세요.<br>
-      <span style="font-size:11px;">
-        (브라우저에서 누적판매만 덧붙여 미리보기. 정식 분석은 Python 실행 필요)
+  <!-- 6. Upload — real analysis, not preview -->
+  <section class="panel full" style="border:2px solid var(--accent2);">
+    <h2>CSV 스냅샷 업로드 (여러 개 동시 드래그 가능)</h2>
+    <div class="upload" id="upload-box" style="padding:20px; font-size:14px;">
+      📂 여기로 CSV 파일 드래그 (또는 클릭해서 선택)<br>
+      <span style="font-size:12px; color:var(--muted);">
+        업로드하면 즉시 전체 분석이 다시 돌아요. 파일은 이 브라우저에 저장돼서 새로고침해도 유지됩니다.
       </span>
     </div>
-    <input type="file" id="upload-input" accept=".csv" style="display:none" />
-    <div id="upload-result" style="margin-top:10px; color:var(--muted); font-size:12px;"></div>
+    <input type="file" id="upload-input" accept=".csv" multiple style="display:none" />
+    <div id="upload-result" style="margin-top:10px; font-size:12px;"></div>
+    <div style="display:flex; gap:10px; margin-top:10px; align-items:center; font-size:12px;">
+      <span id="snap-count" style="color:var(--muted);">저장된 스냅샷: 0</span>
+      <button id="btn-clear" style="background:var(--panel2); color:var(--muted); border:1px solid var(--grid); border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer; font-family:inherit;">초기화 (기본 데이터로 복귀)</button>
+    </div>
   </section>
 
   <section class="panel">
@@ -400,13 +404,15 @@ function occColor(occ) {
 let DATA = null;
 let chartAgg = null, chartVel = null;
 
-fetch('data.json')
-  .then(r => { if (!r.ok) throw new Error('data.json 로드 실패'); return r.json(); })
-  .then(d => { DATA = d; render(); })
-  .catch(err => {
-    document.getElementById('subtitle').textContent =
-      'data.json 을 찾을 수 없어요. python3 analyze.py 를 먼저 실행하세요.';
-  });
+if (!window._skipDataJson) {
+  fetch('data.json')
+    .then(r => { if (!r.ok) throw new Error('data.json 로드 실패'); return r.json(); })
+    .then(d => { DATA = d; render(); })
+    .catch(err => {
+      document.getElementById('subtitle').textContent =
+        'data.json 없음. 아래에서 CSV 를 업로드하면 바로 분석됩니다.';
+    });
+}
 
 function render() {
   renderHeader();
@@ -948,41 +954,345 @@ function bindControls() {
   document.getElementById('sort-by').addEventListener('change', renderShowingTable);
   document.getElementById('hide-special').addEventListener('change', renderShowingTable);
 
-  // Upload preview (summary only, no analysis rerun)
+  // ---- Upload handler: real analysis, persistent storage ----
   const box = document.getElementById('upload-box');
   const inp = document.getElementById('upload-input');
   const out = document.getElementById('upload-result');
   box.addEventListener('click', () => inp.click());
-  box.addEventListener('dragover', e => { e.preventDefault(); box.style.borderColor='#7c9eff'; });
+  box.addEventListener('dragover', e => { e.preventDefault(); box.style.borderColor='var(--accent2)'; });
   box.addEventListener('dragleave', () => { box.style.borderColor=''; });
-  box.addEventListener('drop', e => {
+  box.addEventListener('drop', async e => {
     e.preventDefault(); box.style.borderColor='';
-    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length) await handleFiles([...e.dataTransfer.files]);
   });
-  inp.addEventListener('change', e => {
-    if (e.target.files.length) handleFile(e.target.files[0]);
+  inp.addEventListener('change', async e => {
+    if (e.target.files.length) await handleFiles([...e.target.files]);
   });
-  function handleFile(file) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const lines = reader.result.split(/\r?\n/).filter(Boolean);
-      const header = lines[0].split(',');
-      const idx = header.findIndex(h => h.includes('Tickets Sold'));
-      if (idx < 0) { out.textContent = 'CSV 형식이 인식되지 않습니다.'; return; }
-      let sum = 0, n = 0;
-      for (let i = 1; i < lines.length; i++) {
-        const cols = lines[i].split(',');
-        if (cols[idx]) { sum += parseInt(cols[idx],10) || 0; n++; }
-      }
-      const last = DATA.aggregate_forecast.observed_y.slice(-1)[0];
-      out.innerHTML = `<strong>${file.name}</strong><br>`
-        + `누적 판매: <strong>${fmt(sum)}장</strong> (${n}개 회차)<br>`
-        + `직전 스냅샷 대비 <strong>${sum>=last?'+':''}${fmt(sum-last)}장</strong><br>`
-        + `<em>정식 분석을 하려면 snapshots/ 에 저장 후 <code>python3 analyze.py</code> 실행</em>`;
-    };
-    reader.readAsText(file);
+  document.getElementById('btn-clear').onclick = () => {
+    if (confirm('업로드한 모든 CSV 를 삭제하고 기본 데이터로 복귀할까요?')) {
+      localStorage.removeItem('lsf_snapshots');
+      location.reload();
+    }
+  };
+  refreshSnapCount();
+}
+
+// ---------------------------------------------------------------------------
+// Full in-browser analysis — mirrors analyze.py output shape
+// ---------------------------------------------------------------------------
+const STORAGE_KEY = 'lsf_snapshots';
+const EVENT_START = '2026-04-15', EVENT_END = '2026-05-26';
+const SEATS_PER_SHOWING = 158, SHOWINGS_PER_DAY = 8, OPENING_DAY_SHOWINGS = 5;
+const WEEKEND_DOWS = [4, 5, 6]; // Fri Sat Sun (Mon=0)
+
+async function handleFiles(files) {
+  const out = document.getElementById('upload-result');
+  out.innerHTML = '⏳ 파싱 중...';
+  try {
+    const existing = loadStoredSnapshots();
+    const parsed = [];
+    for (const f of files) {
+      const ts = parseTimestampFromName(f.name);
+      if (!ts) { console.warn('skip (no timestamp):', f.name); continue; }
+      const txt = await f.text();
+      const rows = parseCsv(txt);
+      parsed.push({ts, name: f.name, rows});
+    }
+    // Merge: dedupe by timestamp key
+    const map = new Map();
+    for (const s of existing) map.set(s.ts, s);
+    for (const s of parsed)   map.set(s.ts, s);
+    const merged = [...map.values()].sort((a,b) => a.ts.localeCompare(b.ts));
+    saveSnapshots(merged);
+    DATA = buildDataFromSnapshots(merged);
+    render();
+    out.innerHTML = `<span style="color:var(--accent2);">✓ ${parsed.length}개 업로드 완료. 총 ${merged.length}개 스냅샷으로 재분석.</span>`;
+    refreshSnapCount();
+  } catch(err) {
+    out.innerHTML = `<span style="color:var(--danger);">❌ ${err.message}</span>`;
+    console.error(err);
   }
 }
+
+function refreshSnapCount() {
+  const s = loadStoredSnapshots();
+  const el = document.getElementById('snap-count');
+  if (el) el.textContent = `저장된 스냅샷: ${s.length}개`;
+}
+
+function parseTimestampFromName(name) {
+  const m = name.match(/(\d{8})_(\d{6})/);
+  if (!m) return null;
+  // 2026-04-20T14:29:28 → '20260420_142928'
+  return `${m[1]}_${m[2]}`;
+}
+
+function parseCsv(txt) {
+  const lines = txt.split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return [];
+  const hdr = lines[0].split(',').map(h => h.trim());
+  const iDate  = hdr.findIndex(h => h === 'Date');
+  const iTime  = hdr.findIndex(h => h === 'Start Time');
+  const iScr   = hdr.findIndex(h => h === 'Screen' || h === 'Auditorium');
+  const iSold  = hdr.findIndex(h => h.includes('Tickets Sold'));
+  const iSeats = hdr.findIndex(h => h.includes('of Seats'));
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const c = lines[i].split(',');
+    if (c.length < 4) continue;
+    const date = (c[iDate]||'').trim();
+    if (!date) continue;
+    out.push({
+      Date: normalizeDate(date),
+      start_time: parseInt((c[iTime]||'0').trim(), 10),
+      Screen: (c[iScr]||'').trim(),
+      sold:  parseInt((c[iSold]||'0').trim(), 10) || 0,
+      seats: parseInt((c[iSeats]||'158').trim(), 10) || 158,
+    });
+  }
+  return out;
+}
+
+function normalizeDate(s) {
+  // accept '2026-04-20' or '20260420' → '2026-04-20'
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  if (/^\d{8}$/.test(s)) return `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+  return s;
+}
+
+function loadStoredSnapshots() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveSnapshots(snaps) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(snaps));
+}
+
+function tsToDate(ts) {
+  // '20260420_142928' → Date
+  const s = ts.replace('_','');
+  return new Date(+s.slice(0,4), +s.slice(4,6)-1, +s.slice(6,8), +s.slice(8,10), +s.slice(10,12), +s.slice(12,14));
+}
+function tsDisplay(ts) {
+  const d = tsToDate(ts);
+  return d.toISOString().slice(0,19).replace('T',' ');
+}
+function classifySegment(dateStr, startTime) {
+  const dow = new Date(dateStr).getDay(); // 0=Sun..6=Sat (JS)
+  // convert to Mon=0 system
+  const dowMon = (dow + 6) % 7;
+  const dowBucket = WEEKEND_DOWS.includes(dowMon) ? 'weekend' : 'weekday';
+  const timeBucket = startTime <= 1430 ? 'day' : 'night';
+  return [dowBucket, timeBucket];
+}
+const SEG_LABEL = {
+  'weekday_day':'주중 낮','weekday_night':'주중 밤',
+  'weekend_day':'주말 낮','weekend_night':'주말 밤',
+};
+
+// Simple logistic fit: grid search over K/r/t0, then refine.
+function fitLogistic(t, y, K_hard) {
+  let best = null;
+  const yLast = y[y.length-1];
+  const Ks = [yLast*1.01, yLast*1.1, yLast*1.3, yLast*1.8, yLast*2.5, K_hard];
+  const rs = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4];
+  const t0s = [0, 20, 40, 80, 150, 300, 600];
+  for (const K of Ks) for (const r of rs) for (const t0 of t0s) {
+    let sse = 0;
+    for (let i = 0; i < t.length; i++) {
+      const yhat = K / (1 + Math.exp(-r*(t[i]-t0)));
+      sse += (yhat - y[i]) ** 2;
+    }
+    if (!best || sse < best.sse) best = {K, r, t0, sse};
+  }
+  return best;
+}
+
+function buildDataFromSnapshots(snaps) {
+  if (!snaps.length) return null;
+  const t0 = tsToDate(snaps[0].ts);
+  const tObs = snaps.map(s => (tsToDate(s.ts) - t0) / 3600000);
+  const yObs = snaps.map(s => s.rows.reduce((a,r) => a + r.sold, 0));
+
+  const latest = snaps[snaps.length-1];
+  const csvSeats = latest.rows.reduce((a,r) => a + r.seats, 0);
+
+  // Scheduled seats (42-day run)
+  const evDays = Math.floor((new Date(EVENT_END) - new Date(EVENT_START))/86400000) + 1;
+  const scheduledShowings = OPENING_DAY_SHOWINGS + (evDays - 1) * SHOWINGS_PER_DAY;
+  const scheduledSeats = scheduledShowings * SEATS_PER_SHOWING;
+  const K_hard = Math.max(csvSeats, scheduledSeats);
+
+  // Logistic fit for the chart
+  const fit = yObs.length >= 3 ? fitLogistic(tObs, yObs, K_hard) : null;
+  const horizonH = Math.max((new Date(EVENT_END) - t0)/3600000 + 24, tObs[tObs.length-1] + 72);
+  const tGrid = [];
+  for (let i = 0; i < 120; i++) tGrid.push(horizonH * i / 119);
+  const central = fit
+    ? tGrid.map(x => fit.K / (1 + Math.exp(-fit.r*(x-fit.t0))))
+    : tGrid.map(()=>yObs[yObs.length-1]);
+  // crude bands ±7.5 / ±15 %
+  const p5  = central.map(v => v * 0.85);
+  const p25 = central.map(v => v * 0.925);
+  const p75 = central.map(v => v * 1.075);
+  const p95 = central.map(v => v * 1.15);
+
+  // Per-showing (from latest snapshot)
+  const showings = latest.rows.map(r => {
+    const dowIdx = (new Date(r.Date).getDay() + 6) % 7;
+    const dowStr = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][dowIdx];
+    const occ = r.sold / r.seats;
+    return {
+      Date: r.Date, dow: dowStr, start_time: r.start_time, Screen: r.Screen,
+      sold: r.sold, seats: r.seats, occ,
+      special: occ >= 0.95,
+      final_occ_est: occ, final_sold_est: r.sold,
+      p5_occ: occ, p95_occ: occ,   // refined after segment analysis
+    };
+  });
+
+  // Segment analysis
+  const segBuckets = {};
+  for (const r of latest.rows) {
+    const [db, tb] = classifySegment(r.Date, r.start_time);
+    const key = `${db}_${tb}`;
+    if (!segBuckets[key]) segBuckets[key] = [];
+    segBuckets[key].push(r);
+  }
+  const segments = {};
+  for (const [key, rows] of Object.entries(segBuckets)) {
+    const seats = rows.reduce((a,r)=>a+r.seats,0);
+    const sold  = rows.reduce((a,r)=>a+r.sold,0);
+    const occs  = rows.map(r=>r.sold/r.seats).filter(o=>o>0.02).sort((a,b)=>a-b);
+    const bench = occs.length >= 3 ? occs[Math.floor(occs.length/2)] : (sold/seats||0);
+    let terminal = 0;
+    for (const r of rows) {
+      const thisOcc = r.sold / r.seats;
+      terminal += Math.min(Math.max(thisOcc, bench), 1) * r.seats;
+    }
+    terminal = Math.round(terminal);
+    segments[key] = {
+      label: SEG_LABEL[key] || key,
+      showings: rows.length, seats, current_sold: sold,
+      current_occ: +((sold/seats||0).toFixed(4)),
+      benchmark_occ: +bench.toFixed(4),
+      terminal_sold: terminal,
+      terminal_occ: +(terminal/seats).toFixed(4),
+      headroom: terminal - sold,
+    };
+  }
+  const segSum = Object.values(segments).reduce((a,s)=>a+s.terminal_sold,0);
+
+  // Assign per-showing P5/P95 using segment info
+  for (const sh of showings) {
+    const [db,tb] = classifySegment(sh.Date, sh.start_time);
+    const seg = segments[`${db}_${tb}`];
+    if (seg && !sh.special) {
+      sh.final_occ_est = Math.min(Math.max(sh.occ, seg.benchmark_occ), 1);
+      sh.final_sold_est = Math.round(sh.final_occ_est * sh.seats);
+      sh.p5_occ  = Math.max(sh.occ, sh.final_occ_est - 0.1);
+      sh.p95_occ = Math.min(1, sh.final_occ_est + 0.1);
+    }
+  }
+
+  // Phase breakdown (segment-based now)
+  const phase1Seats = csvSeats;
+  const phase2Seats = Math.max(scheduledSeats - csvSeats, 0);
+  const phase1Total = segSum;
+  const phase1Conv  = phase1Total / phase1Seats;
+  const phase2Total = Math.round(phase1Conv * phase2Seats);
+  const bottomUp = showings.reduce((a,s)=>a+s.final_sold_est,0);
+
+  // Velocities
+  const velocities = [];
+  for (let i = 1; i < snaps.length; i++) {
+    const hrs = (tsToDate(snaps[i].ts) - tsToDate(snaps[i-1].ts))/3600000;
+    const d = yObs[i] - yObs[i-1];
+    velocities.push({from: tsDisplay(snaps[i-1].ts).slice(5,16), to: tsDisplay(snaps[i].ts).slice(5,16), delta:d, hours:hrs, rate_per_hour: d/hrs});
+  }
+
+  // Snapshot summary
+  const snapshotSummary = snaps.map((s,i) => ({
+    timestamp: tsDisplay(s.ts),
+    total_sold: yObs[i],
+    total_seats: s.rows.reduce((a,r)=>a+r.seats,0),
+    rows: s.rows.length,
+  }));
+
+  // Days elapsed
+  const nowDate = tsToDate(latest.ts);
+  const daysElapsed = Math.max(Math.floor((nowDate - new Date(EVENT_START))/86400000) + 1, 0);
+  const daysRemaining = Math.max(Math.floor((new Date(EVENT_END) - nowDate)/86400000), 0);
+
+  return {
+    meta: {
+      generated_at: new Date().toISOString().slice(0,19).replace('T',' '),
+      show_name: 'LE SSERAFIM VR Concert : Invitation',
+      venue: '롯데시네마 월드타워 3관',
+      event_start: EVENT_START, event_end: EVENT_END, event_days: evDays,
+      days_elapsed: daysElapsed, days_remaining: daysRemaining,
+      total_showings_scheduled: scheduledShowings,
+      total_seats: K_hard, csv_listed_seats: csvSeats,
+      num_snapshots: snaps.length,
+      first_snapshot: tsDisplay(snaps[0].ts),
+      last_snapshot:  tsDisplay(latest.ts),
+    },
+    snapshots: snapshotSummary,
+    velocities,
+    aggregate_forecast: {
+      t_grid_hours: tGrid, central, p5, p25, p50: central, p75, p95,
+      observed_t: tObs, observed_y: yObs,
+      final: {
+        p5: segSum*0.85, p50: segSum, p95: segSum*1.15,
+        bottom_up: bottomUp,
+      },
+    },
+    models: fit ? [{
+      name:'logistic', status:'ok',
+      params:[fit.K, fit.r, fit.t0],
+      aicc: fit.sse, sse: fit.sse, weight: 1.0, predicted_K: fit.K,
+    }] : [],
+    showings,
+    heatmap: showings.map(s => ({
+      date: s.Date, dow: s.dow, start_time: s.start_time,
+      current_occ: s.occ, forecast_occ: s.final_occ_est, special: s.special,
+    })),
+    phase_breakdown: {
+      phase1_seats: phase1Seats, phase2_seats: phase2Seats,
+      phase1_conversion: {p5: phase1Conv*0.65, p50: phase1Conv, p95: phase1Conv*1.5},
+      phase1_forecast:   {p5: phase1Total*0.85, p50: phase1Total, p95: phase1Total*1.15},
+      phase2_forecast:   {p5: phase2Total*0.65, p50: phase2Total, p95: phase2Total*1.5},
+      combined_forecast: {
+        p5:  phase1Total*0.85 + phase2Total*0.65,
+        p50: phase1Total + phase2Total,
+        p95: phase1Total*1.15 + phase2Total*1.5,
+      },
+    },
+    segments,
+    segment_summary: {
+      terminal_sum: segSum,
+      current_sum:  Object.values(segments).reduce((a,s)=>a+s.current_sold,0),
+      headroom_sum: Object.values(segments).reduce((a,s)=>a+s.headroom,0),
+    },
+  };
+}
+
+// On page load: try localStorage first, else fall back to data.json
+(function initialLoad() {
+  const saved = loadStoredSnapshots();
+  if (saved && saved.length > 0) {
+    // Short-circuit the fetch(data.json) path
+    DATA = buildDataFromSnapshots(saved);
+    document.addEventListener('DOMContentLoaded', () => {
+      render();
+      refreshSnapCount();
+      const sub = document.getElementById('subtitle');
+      if (sub) sub.innerHTML += ` · <span style="color:var(--accent2);">브라우저 저장 ${saved.length}개 스냅샷</span>`;
+    });
+    // Prevent the fetch-based loader from overwriting
+    window._skipDataJson = true;
+  }
+})();
 </script>
 </body>
 </html>
