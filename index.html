@@ -557,6 +557,9 @@ function recomputeV3() {
   // Sync top KPI combined
   document.getElementById('kpi-combined-p50').textContent = fmt(total);
   document.getElementById('kpi-combined-band').textContent = `세그먼트+외부+바이럴 합계`;
+
+  // 차트도 새 target 으로 갱신
+  updateAggChart();
 }
 
 function renderPhaseBreakdown() {
@@ -642,83 +645,134 @@ function renderHeader() {
 // ---------------------------------------------------------------------------
 // Aggregate forecast chart
 // ---------------------------------------------------------------------------
-function makeBandDatasets(f, opts) {
-  const grid = f.t_grid_hours;
+// ---- Date-based forecast curve generation ----
+// Returns {labels: [...'YYYY-MM-DD'], observed: [y or null], forecast: [y]}
+// where forecast goes from 0 at event start to `target` at event end,
+// constrained to match observed points.
+function generateDateForecast(target) {
+  const f = DATA.aggregate_forecast;
+  const meta = DATA.meta;
+  const start = new Date(meta.event_start + 'T00:00:00');
+  const end   = new Date(meta.event_end   + 'T23:59:59');
+  const dayMs = 86400000;
+  const nDays = Math.floor((end - start) / dayMs) + 1;
+
+  const labels   = [];
+  const observed = [];
+  const forecast = [];
+
+  // Observed map: date → cumulative sold at end of that day
+  //   (use the latest snapshot on or before that date)
+  const snaps = DATA.snapshots || [];
+  const snapByDate = {};
+  for (const s of snaps) {
+    const dt = new Date(s.timestamp.replace(' ','T'));
+    const key = dt.toISOString().slice(0,10);
+    // keep latest snapshot per date (last wins since snapshots sorted)
+    snapByDate[key] = {dt, total: s.total_sold};
+  }
+  let lastObservedY  = 0;
+  let lastObservedIdx = -1;
+
+  // Forecast shape: logistic that goes from ~0 to target across event window
+  //   target = user-supplied v3 total.
+  //   fit midpoint & steepness so curve passes through observed points.
+  //   Simple closed-form: use midpoint = 0.55 * nDays, r = 4/nDays
+  //   We'll refine by a tiny tweak so Y at lastObservedDay ≈ lastObservedY.
+  let midpoint = nDays * 0.55;
+  let r        = 4 / nDays;
+
+  // Find last observed day index to tune
+  const observedDates = Object.keys(snapByDate).sort();
+  const lastObsKey    = observedDates[observedDates.length-1];
+  const lastObsY      = lastObsKey ? snapByDate[lastObsKey].total : 0;
+  const lastObsIdx    = lastObsKey
+    ? Math.floor((new Date(lastObsKey) - start)/dayMs)
+    : 0;
+
+  // Solve: target / (1 + exp(-r*(lastObsIdx - midpoint))) = lastObsY
+  //   → exp(-r*(lastObsIdx-midpoint)) = target/lastObsY - 1
+  //   → midpoint = lastObsIdx + ln(target/lastObsY - 1)/r
+  if (lastObsY > 0 && lastObsY < target) {
+    midpoint = lastObsIdx + Math.log(target/lastObsY - 1) / r;
+    // clamp so curve still ends near target
+    midpoint = Math.min(Math.max(midpoint, 2), nDays * 0.85);
+  }
+
+  for (let i = 0; i < nDays; i++) {
+    const d = new Date(start.getTime() + i * dayMs);
+    const key = d.toISOString().slice(0,10);
+    labels.push(key);
+    observed.push(snapByDate[key] ? snapByDate[key].total : null);
+    forecast.push(target / (1 + Math.exp(-r * (i - midpoint))));
+  }
+  return {labels, observed, forecast, lastObsIdx, target};
+}
+
+function makeBandDatasets(target, opts) {
+  const {labels, observed, forecast, lastObsIdx} = generateDateForecast(target);
   const ds = [];
+  const adj = opts.rateAdj || 0;
+  const scaledForecast = forecast.map(v => v * (1 + adj));
+  const p95 = scaledForecast.map(v => v * 1.15);
+  const p75 = scaledForecast.map(v => v * 1.075);
+  const p25 = scaledForecast.map(v => v * 0.925);
+  const p5  = scaledForecast.map(v => v * 0.85);
+
   if (opts.band95) {
-    ds.push({
-      label: 'P5–P95',
-      data: grid.map((t,i) => ({x:t, y:f.p95[i]})),
-      borderWidth: 0, fill:'+1', pointRadius:0,
-      backgroundColor: 'rgba(124,158,255,0.08)', order: 5,
-    });
-    ds.push({
-      label: 'P5',
-      data: grid.map((t,i) => ({x:t, y:f.p5[i]})),
-      borderWidth: 0, pointRadius:0,
-      backgroundColor: 'transparent', order: 5,
-    });
+    ds.push({label:'P95', data:p95, borderWidth:0, pointRadius:0,
+             backgroundColor:'rgba(124,158,255,0.08)', fill:'+1', order:5});
+    ds.push({label:'P5',  data:p5,  borderWidth:0, pointRadius:0,
+             backgroundColor:'transparent', order:5});
   }
   if (opts.band75) {
-    ds.push({
-      label: 'P25–P75',
-      data: grid.map((t,i) => ({x:t, y:f.p75[i]})),
-      borderWidth: 0, fill:'+1', pointRadius:0,
-      backgroundColor: 'rgba(124,158,255,0.18)', order: 4,
-    });
-    ds.push({
-      label: 'P25',
-      data: grid.map((t,i) => ({x:t, y:f.p25[i]})),
-      borderWidth: 0, pointRadius:0,
-      backgroundColor: 'transparent', order: 4,
-    });
+    ds.push({label:'P75', data:p75, borderWidth:0, pointRadius:0,
+             backgroundColor:'rgba(124,158,255,0.18)', fill:'+1', order:4});
+    ds.push({label:'P25', data:p25, borderWidth:0, pointRadius:0,
+             backgroundColor:'transparent', order:4});
   }
-  ds.push({
-    label: 'Ensemble (P50)',
-    data: grid.map((t,i) => ({x:t, y:f.central[i] * (1 + opts.rateAdj)})),
-    borderColor: '#7c9eff', borderWidth: 2.5, fill:false,
-    pointRadius: 0, order: 1, tension: 0.2,
-  });
-  // Observed
-  ds.push({
-    label: '실측',
-    data: f.observed_t.map((t,i) => ({x:t, y:f.observed_y[i]})),
-    borderColor: '#59d4a9', backgroundColor: '#59d4a9',
-    pointRadius: 5, pointStyle: 'circle', showLine: false, order: 0,
-  });
-  return ds;
+  ds.push({label:'예측 누적 (P50)', data:scaledForecast,
+           borderColor:'#7c9eff', borderWidth:2.5, fill:false,
+           pointRadius:0, tension:0.3, order:1});
+  ds.push({label:'실측', data:observed,
+           borderColor:'#59d4a9', backgroundColor:'#59d4a9',
+           pointRadius:5, pointStyle:'circle', showLine:false,
+           spanGaps:false, order:0});
+  return {labels, datasets: ds};
 }
 
 function renderAggChart() {
   const ctx = document.getElementById('chart-agg').getContext('2d');
-  const f = DATA.aggregate_forecast;
+  const target = computeV3Total();
+  const {labels, datasets} = makeBandDatasets(target, {band95:true, band75:true, rateAdj:0});
   chartAgg = new Chart(ctx, {
     type: 'line',
-    data: { datasets: makeBandDatasets(f,{band95:true,band75:true,rateAdj:0}) },
+    data: { labels, datasets },
     options: {
       responsive:true, maintainAspectRatio:false,
-      animation:{ duration:400 },
+      animation:{ duration:300 },
       interaction:{ mode:'index', intersect:false },
       scales: {
         x: {
-          type: 'linear',
-          title: { display:true, text:'오픈 후 경과 시간 (h)', color:'#8a93a2' },
+          type: 'category',
+          title: { display:true, text:'날짜 (예매 시작 → 상영 종료)', color:'#8a93a2' },
           grid:  { color:'#2a2f3a' },
-          ticks: { color:'#8a93a2' }
+          ticks: { color:'#8a93a2', autoSkip:true, maxTicksLimit:12, callback:(v,i) => labels[i]?.slice(5) }
         },
         y: {
           title: { display:true, text:'누적 판매 (장)', color:'#8a93a2' },
           grid:  { color:'#2a2f3a' },
-          ticks: { color:'#8a93a2', callback: v => fmt(v) }
+          ticks: { color:'#8a93a2', callback: v => fmt(v) },
+          suggestedMin: 0,
         }
       },
       plugins: {
         legend: { position:'bottom', labels:{ color:'#e8ebef',
-                  filter: (item) => !['P5','P25'].includes(item.text) } },
+                  filter: item => !['P5','P25','P75','P95'].includes(item.text) } },
         tooltip: {
           callbacks: {
-            title: items => `t = ${items[0].parsed.x.toFixed(1)}h`,
-            label: it => `${it.dataset.label}: ${fmt(it.parsed.y)}`
+            title: items => labels[items[0].dataIndex],
+            label: it => it.parsed.y === null ? null : `${it.dataset.label}: ${fmt(it.parsed.y)}`
           }
         }
       }
@@ -727,30 +781,29 @@ function renderAggChart() {
 }
 
 function updateAggChart() {
+  if (!chartAgg) return;
   const adj = parseFloat(document.getElementById('rate-adj').value) / 100;
   const b95 = document.getElementById('show-band-95').checked;
   const b75 = document.getElementById('show-band-75').checked;
-  const showModels = document.getElementById('show-models').checked;
-  const f = DATA.aggregate_forecast;
-  const ds = makeBandDatasets(f,{band95:b95, band75:b75, rateAdj:adj});
-
-  if (showModels) {
-    const colors = { logistic:'#f2b96a', gompertz:'#ef6b77', bass:'#59d4a9' };
-    for (const m of DATA.models) {
-      if (m.status !== 'ok') continue;
-      const curve = modelCurve(m, f.t_grid_hours).map(
-        (y,i) => ({x: f.t_grid_hours[i], y: y * (1 + adj)}));
-      ds.push({
-        label: m.name,
-        data: curve,
-        borderColor: colors[m.name] || '#8a93a2',
-        borderDash: [4,4], borderWidth:1.5, pointRadius:0,
-        fill:false, order: 2,
-      });
-    }
-  }
-  chartAgg.data.datasets = ds;
+  const target = computeV3Total();
+  const {labels, datasets} = makeBandDatasets(target, {band95:b95, band75:b75, rateAdj:adj});
+  chartAgg.data.labels = labels;
+  chartAgg.data.datasets = datasets;
   chartAgg.update('none');
+}
+
+// Compute the current v3 total (same math as recomputeV3, for chart target)
+function computeV3Total() {
+  if (!DATA || !DATA.segments) return 0;
+  const segs = DATA.segments;
+  const pb   = DATA.phase_breakdown;
+  const A = DATA.segment_summary.terminal_sum;
+  const seatRatio = pb.phase2_seats / Math.max(pb.phase1_seats, 1);
+  const B = Math.round(Object.values(segs).reduce((acc, s) => acc + (s.terminal_occ * s.seats * seatRatio), 0));
+  const currentSold = DATA.segment_summary.current_sum;
+  const C = v3State.campaigns.reduce((acc, c) => acc + campaignTickets(c, currentSold), 0);
+  const D = Math.round((A + B) * v3State.viralCoef * 0.15);
+  return A + B + C + D;
 }
 
 function modelCurve(m, tgrid) {
